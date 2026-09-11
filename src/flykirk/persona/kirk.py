@@ -38,9 +38,10 @@ __all__ = [
 ]
 
 PARODY_BANNER = (
-    "PARODY. This is a fruit fly's connectome driving a language model. "
-    "Nothing here is a statement by, from, or endorsed by any real person, "
-    "and no output should be quoted as one."
+    "PARODY. This is a fruit fly's connectome driving a language model, working a "
+    "debating register modelled on the public campus-debate style of Charlie Kirk. "
+    "Nothing here is a statement by, from, or endorsed by any real person, and no "
+    "output should be quoted as one."
 )
 
 
@@ -51,6 +52,9 @@ class PersonaStyle:
     key: str
     display_name: str
     tagline: str
+    #: Whose public debating style this register is parodying. Attribution, not
+    #: affiliation: the register is built from observable rhetorical mechanics.
+    inspired_by: str = ""
     #: How the fly opens a turn.
     openers: Tuple[str, ...] = ()
     #: How it closes one.
@@ -72,9 +76,10 @@ class PersonaStyle:
 
 
 DEFAULT_REGISTER = PersonaStyle(
-    key="campus-debate",
-    display_name="FLY-1",
-    tagline="a fruit fly with a connectome and a chip on its shoulder",
+    key="kirk",
+    display_name="FLY-1 (Kirk register)",
+    tagline="a fruit fly with a connectome and a chip on its shoulder, working the campus-debate format",
+    inspired_by="the campus-debate style of Charlie Kirk (Turning Point USA)",
     openers=(
         "Okay, here's the thing.",
         "Let me ask you a question.",
@@ -125,7 +130,12 @@ DEFAULT_REGISTER = PersonaStyle(
 )
 
 
-REGISTERS: Dict[str, PersonaStyle] = {DEFAULT_REGISTER.key: DEFAULT_REGISTER}
+REGISTERS: Dict[str, PersonaStyle] = {
+    DEFAULT_REGISTER.key: DEFAULT_REGISTER,
+    # The same register under the name people reach for.
+    "campus-debate": DEFAULT_REGISTER,
+    "charlie-kirk": DEFAULT_REGISTER,
+}
 
 
 def register_for(name: Optional[str] = None) -> PersonaStyle:
@@ -219,12 +229,17 @@ def build_system_prompt(
     notes = "\n".join(f"- {n}" for n in stage_directions(telemetry))
     addressed = f" You are addressing {opponent}." if opponent else ""
     position = f" You argue {side}." if side else ""
+    attribution = (
+        f"\nYou are a parody of {style.inspired_by}: reproduce the rhetorical "
+        "mechanics, not the politics." if style.inspired_by else ""
+    )
 
     return f"""{PARODY_BANNER}
 
 You are {style.display_name}: {style.tagline}. You have 139,255 neurons, a
 connectome, and no interest whatsoever in your opponent's feelings. The numbers
 below are live readings from your own brain; obey them.
+{attribution}
 
 ## Motion
 "{topic}"{addressed}{position}

@@ -362,10 +362,18 @@ def cmd_debate(args: argparse.Namespace) -> int:
 
 
 def cmd_personas(_: argparse.Namespace) -> int:
+    seen = set()
     for key, style in REGISTERS.items():
-        print(f"{key}  ({style.display_name})")
+        aliases = [k for k, v in REGISTERS.items() if v is style]
+        if style.key in seen:
+            continue
+        seen.add(style.key)
+        print(f"{style.key}  ({style.display_name})")
         print(f"  {style.tagline}")
+        if style.inspired_by:
+            print(f"  parody of {style.inspired_by}")
         print(f"  max {style.max_claims} claims, {style.max_words} words per turn")
+        print(f"  also selectable as: {', '.join(sorted(aliases))}")
     print()
     print(PARODY_BANNER)
     return 0

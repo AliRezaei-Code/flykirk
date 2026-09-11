@@ -9,10 +9,17 @@ gets measured, and that measurement writes the system prompt *and* sets the
 sampler. Two turns of the same sentence produce different output because the
 brain between them changed.
 
-**Parody.** Not affiliated with, endorsed by, or connected to any person or
-organisation. The default motions are absurd on purpose — the comedy comes from
-applying debate-bro mechanics to soup and traffic cones, not from arguing about
-real people.
+**Parody.** The debating register is modelled on the public campus-debate style of
+Charlie Kirk. The register is built from observable rhetorical mechanics — the
+rapid-fire pacing, the debate-me dare, the reflexive pivot, the capped claim
+stack — not from a script or from his positions. Not affiliated with, endorsed
+by, or connected to Charlie Kirk, Turning Point USA, or any other person or
+organisation, and no output should be quoted as anyone's statement. The default
+motions are absurd on purpose: the comedy comes from applying debate-bro
+mechanics to soup and traffic cones.
+
+Select the register with `--register kirk` (aliases: `campus-debate`,
+`charlie-kirk`; `flykirk personas` lists them).
 
 ---
 
@@ -183,9 +190,18 @@ sets how fast it talks.
 
 ### The language model
 
-`:class:`OpenAICompatClient` is stdlib-only `urllib` against `/chat/completions`,
-so any OpenAI-compatible server works. `ScriptedClient` needs no model at all and
-makes `--offline` deterministic.
+`OpenAICompatClient` is stdlib-only `urllib` against `/chat/completions`, so any
+OpenAI-compatible server works. `ScriptedClient` needs no model at all and makes
+`--offline` deterministic.
+
+### The register
+
+`persona/kirk.py` holds the register: openers, transitions, rhetorical moves,
+address forms, behavioural tics, and the things it never does. The model is told
+the tics, and told what to avoid — a register defined only by what it does
+drifts back to generic assistant prose within two turns. `max_claims` caps the
+claim stack, because the register's defining move is stacking claims and an
+uncapped stack is just noise.
 
 ## CLI
 
