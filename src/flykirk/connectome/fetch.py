@@ -21,12 +21,12 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from ..paths import data_dir, ensure_dir
-from .graph import Connectome, NeuronTable, normalize_nt
+from .graph import Connectome, NeuronTable
 from .surrogate import PROVENANCE, surrogate_connectome
 
 __all__ = [
@@ -221,6 +221,32 @@ def _pick(names: Sequence[str], candidates: Sequence[str]) -> Optional[str]:
     return None
 
 
+class _RootIdMapper:
+    """Vectorised FlyWire ``root_id`` -> graph index lookup.
+
+    A per-element dict lookup over tens of millions of edges is the difference
+    between a two-minute build and a two-hour one, so this sorts the ids once
+    and maps each batch with ``searchsorted``. Unmapped ids come back as -1.
+    """
+
+    def __init__(self, root_id: np.ndarray) -> None:
+        order = np.argsort(root_id, kind="stable")
+        self.sorted_ids = root_id[order]
+        self.order = order.astype(np.int64)
+
+    def __len__(self) -> int:
+        return int(self.sorted_ids.shape[0])
+
+    def map(self, ids: np.ndarray) -> np.ndarray:
+        if self.sorted_ids.size == 0:
+            return np.full(ids.shape[0], -1, dtype=np.int64)
+        pos = np.searchsorted(self.sorted_ids, ids)
+        clipped = np.minimum(pos, self.sorted_ids.size - 1)
+        found = self.sorted_ids[clipped] == ids
+        out = np.where(found, self.order[clipped], -1)
+        return out.astype(np.int64)
+
+
 def connectome_from_feather(
     feather: Path,
     neurons: NeuronTable,
@@ -237,20 +263,17 @@ def connectome_from_feather(
     ``min_synapses``.
     """
     try:
-        import pyarrow as pa  # noqa: F401
         import pyarrow.ipc as pa_ipc
     except ImportError as exc:  # pragma: no cover - exercised only without pyarrow
         raise RuntimeError(
             "reading the Zenodo feather needs pyarrow: pip install 'flykirk[data]'"
         ) from exc
 
-    index = neurons.index
+    mapper = _RootIdMapper(neurons.root_id)
     class_ok = None
     if include_classes:
         wanted = set(include_classes)
-        class_ok = {
-            int(r): (c in wanted) for r, c in zip(neurons.root_id.tolist(), neurons.cell_class.tolist())
-        }
+        class_ok = np.isin(neurons.cell_class, np.asarray(sorted(wanted), dtype=neurons.cell_class.dtype))
 
     pre_parts: List[np.ndarray] = []
     post_parts: List[np.ndarray] = []
@@ -277,18 +300,14 @@ def connectome_from_feather(
             weight = np.ones(pre_ids.shape[0], dtype=np.float32)
         rows_seen += pre_ids.shape[0]
 
-        pre_ix = np.fromiter((index.get(int(x), -1) for x in pre_ids), dtype=np.int64, count=pre_ids.shape[0])
-        post_ix = np.fromiter((index.get(int(x), -1) for x in post_ids), dtype=np.int64, count=post_ids.shape[0])
+        pre_ix = mapper.map(pre_ids.astype(np.int64))
+        post_ix = mapper.map(post_ids.astype(np.int64))
         keep = (pre_ix >= 0) & (post_ix >= 0) & (weight >= min_synapses)
-        dropped_unmapped += int((~((pre_ix >= 0) & (post_ix >= 0))).sum())
+        mapped_both = (pre_ix >= 0) & (post_ix >= 0)
+        dropped_unmapped += int((~mapped_both).sum())
         pre_ix, post_ix, weight = pre_ix[keep], post_ix[keep], weight[keep]
         if class_ok is not None and pre_ix.size:
-            allowed = np.fromiter(
-                (class_ok.get(int(i), False) for i in np.concatenate([pre_ix, post_ix])),
-                dtype=bool,
-                count=pre_ix.size * 2,
-            )
-            keep2 = allowed[: pre_ix.shape[0]] & allowed[pre_ix.shape[0] :]
+            keep2 = class_ok[pre_ix] & class_ok[post_ix]
             pre_ix, post_ix, weight = pre_ix[keep2], post_ix[keep2], weight[keep2]
         pre_parts.append(pre_ix)
         post_parts.append(post_ix)
@@ -350,7 +369,7 @@ def connectome_from_neuprint(
             "neuPrint access needs neuprint-python: pip install 'flykirk[neuprint]'"
         ) from exc
 
-    client = Client(server or f"https://neuprint.janelia.org", dataset=dataset, token=token)
+    client = Client(server or "https://neuprint.janelia.org", dataset=dataset, token=token)
     neurons_df, _ = fetch_neurons(client)
 
     ids = neurons_df["bodyId"].to_numpy()

@@ -14,7 +14,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, List, Optional, Sequence
+from typing import Optional, Sequence
 
 from . import __version__
 from .brain.sim import BrainConfig, BrainSim
@@ -95,6 +95,13 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--seed", type=int, default=7)
     fetch.add_argument("--max-edges", type=int, default=2_000_000)
     fetch.add_argument("--min-synapses", type=int, default=3)
+    fetch.add_argument(
+        "--include-class",
+        action="append",
+        default=None,
+        help="keep only edges whose endpoints are in this cell class (repeatable)",
+    )
+    fetch.add_argument("--limit-edges", type=int, default=None, help="stop after this many edges survive")
     fetch.add_argument("--force", action="store_true")
     fetch.add_argument("--data")
 
@@ -230,6 +237,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         seed=args.seed,
         max_edges=args.max_edges,
         min_synapses=args.min_synapses,
+        include_classes=args.include_class,
+        limit_edges=args.limit_edges,
         force=args.force,
     )
     print(pal.green(f"connectome built -> {root / 'connectome.npz'}"))

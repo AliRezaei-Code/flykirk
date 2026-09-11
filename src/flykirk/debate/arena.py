@@ -19,7 +19,7 @@ from ..brain.readout import Telemetry
 from ..brain.sim import BrainSim
 from ..llm.client import ChatClient, TurnContext
 from ..llm.sampling import SamplingParams, from_telemetry
-from ..persona.kirk import PersonaStyle, build_system_prompt, register_for
+from ..persona.kirk import PersonaStyle, build_system_prompt
 
 __all__ = ["Turn", "Verdict", "DebateTranscript", "FlyAgent", "Arena"]
 

@@ -19,7 +19,7 @@ import random
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 from ..brain.readout import Telemetry
 from ..persona.kirk import PersonaStyle, register_for

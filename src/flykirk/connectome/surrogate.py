@@ -163,12 +163,10 @@ def surrogate_connectome(
     super_class: List[str] = []
     cell_class: List[str] = []
     nt: List[str] = []
-    block_of: List[int] = []
     for block_id, ((sup, cls, _share, transmitter), count) in enumerate(zip(BLOCKS, counts)):
         super_class.extend([sup] * count)
         cell_class.extend([cls] * count)
         nt.extend([transmitter] * count)
-        block_of.extend([block_id] * count)
 
     # Root ids are negative so a surrogate neuron can never collide with a
     # FlyWire root id in a downstream join.
@@ -181,7 +179,6 @@ def surrogate_connectome(
         nt=np.array(nt, dtype=object),
     )
 
-    block_of_arr = np.asarray(block_of, dtype=np.int64)
     starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
     block_slice = [(int(starts[b]), int(starts[b] + counts[b])) for b in range(len(BLOCKS))]
 
