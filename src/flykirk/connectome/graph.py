@@ -186,6 +186,11 @@ class Connectome:
     weights: np.ndarray
     source: str = "unknown"
     meta: Dict[str, Any] = field(default_factory=dict)
+    #: Per-edge sign, aligned with ``indices``/``weights``. Supplied when the
+    #: dataset resolves transmitter per synapse (FlyWire predicts one per
+    #: presynapse); otherwise the sign falls back to the presynaptic neuron's
+    #: dominant transmitter, which is coarser.
+    edge_sign: Optional[np.ndarray] = None
 
     def __post_init__(self) -> None:
         self.indptr = np.ascontiguousarray(self.indptr, dtype=np.int64)
@@ -201,8 +206,15 @@ class Connectome:
         # Row index per stored edge: precomputed because it is needed on every
         # synaptic-current call and recomputing it means materialising a repeat.
         self.row_of_nnz = np.repeat(np.arange(n, dtype=np.int32), np.diff(self.indptr))
+        if self.edge_sign is not None:
+            self.edge_sign = np.ascontiguousarray(self.edge_sign, dtype=np.float32)
+            if self.edge_sign.shape != self.weights.shape:
+                raise ValueError("edge_sign must align with weights")
+            base_sign = self.edge_sign
+        else:
+            base_sign = self.neurons.sign[self.row_of_nnz]
         # Presynaptic sign folded into the weight, so the hot loop is one bincount.
-        self.signed_weights = (self.weights * self.neurons.sign[self.row_of_nnz]).astype(np.float32)
+        self.signed_weights = (self.weights * base_sign).astype(np.float32)
 
     # ------------------------------------------------------------------ basics
 
@@ -245,11 +257,15 @@ class Connectome:
         neurons: Optional[NeuronTable] = None,
         source: str = "edgelist",
         meta: Optional[Dict[str, Any]] = None,
+        edge_sign: Optional[Sequence[float] | np.ndarray] = None,
     ) -> "Connectome":
         """Aggregate parallel edges and build CSR.
 
         Duplicate (pre, post) pairs are summed, which is exactly what happens
-        when individual synapses are collapsed into connections.
+        when individual synapses are collapsed into connections. When per-edge
+        signs are supplied they are collapsed by weighted majority, so a
+        connection whose synapses are mostly GABAergic stays inhibitory even if
+        a few cholinergic release sites are mixed in.
         """
         pre = np.asarray(pre, dtype=np.int64).ravel()
         post = np.asarray(post, dtype=np.int64).ravel()
@@ -263,13 +279,24 @@ class Connectome:
         weight = np.asarray(weight, dtype=np.float32).ravel()
         if weight.shape != pre.shape:
             raise ValueError("weight must match pre")
+        sign = None if edge_sign is None else np.asarray(edge_sign, dtype=np.float32).ravel()
+        if sign is not None and sign.shape != pre.shape:
+            raise ValueError("edge_sign must match pre")
 
+        collapsed_sign: Optional[np.ndarray] = None
         if pre.size:
             if pre.min() < 0 or pre.max() >= n or post.min() < 0 or post.max() >= n:
                 raise ValueError("edgelist node ids out of range")
             key = pre * np.int64(n) + post
             ukey, inverse = np.unique(key, return_inverse=True)
             summed = np.bincount(inverse, weights=weight.astype(np.float64), minlength=ukey.shape[0])
+            if sign is not None:
+                signed = np.bincount(
+                    inverse,
+                    weights=(weight.astype(np.float64) * sign.astype(np.float64)),
+                    minlength=ukey.shape[0],
+                )
+                collapsed_sign = np.where(signed < 0, -1.0, 1.0).astype(np.float32)
             rows = (ukey // n).astype(np.int64)
             cols = (ukey % n).astype(np.int32)
             indptr = np.searchsorted(rows, np.arange(n + 1, dtype=np.int64), side="left")
@@ -285,6 +312,7 @@ class Connectome:
             weights=summed.astype(np.float32),
             source=source,
             meta=dict(meta or {}),
+            edge_sign=collapsed_sign,
         )
 
     # ------------------------------------------------------------- querying
@@ -330,8 +358,9 @@ class Connectome:
         new_w = self.weights[edge_ok]
         meta = dict(self.meta)
         meta["induced_from"] = self.source
+        kept_sign = None if self.edge_sign is None else self.edge_sign[edge_ok]
         return Connectome.from_edgelist(
-            new_pre, new_post, new_w, self.neurons.subtable(mask), self.source + "+sub", meta
+            new_pre, new_post, new_w, self.neurons.subtable(mask), self.source + "+sub", meta, kept_sign
         )
 
     def out_degree(self) -> np.ndarray:
@@ -390,6 +419,8 @@ class Connectome:
                 "meta": np.array(json.dumps(self.meta, default=str)),
             }
         )
+        if self.edge_sign is not None:
+            payload["edge_sign"] = self.edge_sign
         np.savez_compressed(path, **payload)
         return path
 
@@ -398,6 +429,7 @@ class Connectome:
         with np.load(Path(path), allow_pickle=False) as data:
             neurons = NeuronTable.from_dict({k: data[k] for k in ("root_id", "cell_type", "cell_class", "super_class", "nt", "sign", "soma")})
             meta = json.loads(str(data["meta"]))
+            edge_sign = data["edge_sign"] if "edge_sign" in data.files else None
             return cls(
                 neurons=neurons,
                 indptr=data["indptr"],
@@ -405,6 +437,7 @@ class Connectome:
                 weights=data["weights"],
                 source=str(data["source"]),
                 meta=meta,
+                edge_sign=edge_sign,
             )
 
     # ------------------------------------------------------------- reporting

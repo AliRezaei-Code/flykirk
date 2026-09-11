@@ -202,18 +202,26 @@ class ScriptedClient(ChatClient):
             return template.format(subject=subject)
 
         telemetry: Telemetry = ctx.telemetry or Telemetry()
+        # Draw claims without replacement: the register stacks distinct claims,
+        # and repeating one within a turn reads as a bug rather than a tic.
+        claim_pool = list(self._CLAIMS)
+        rng.shuffle(claim_pool)
+
+        def next_claim() -> str:
+            return fill(claim_pool.pop()) if claim_pool else fill(pick(self._CLAIMS))
+
         pieces: List[str] = [fill(pick(self.style.openers))]
 
         if ctx.opponent_text:
             pieces.append(fill(pick(self.style.address_forms)).capitalize() + ", " + _needle(ctx.opponent_text))
 
-        pieces.append(fill(pick(self._CLAIMS)))
+        pieces.append(next_claim())
         if telemetry.agitation < 0.75:
             pieces.append(fill(pick(self.style.transitions)))
-        pieces.append(fill(pick(self._CLAIMS)))
+        pieces.append(next_claim())
         if telemetry.deflection >= 0.88:
             pieces.append(fill(pick(self._PIVOTS)))
-            pieces.append(fill(pick(self._CLAIMS)))
+            pieces.append(next_claim())
         else:
             pieces.append(fill(pick(self.style.rhetoricals)))
         if telemetry.stamina > 0.6 and telemetry.confidence > 0.5:

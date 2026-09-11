@@ -62,6 +62,13 @@ class TestScriptedClient(unittest.TestCase):
         text = self.client.chat([], SamplingParams(), TurnContext(topic=MOTION, turn=1))
         self.assertIn("banana", text)
 
+    def test_claims_are_not_repeated_within_a_turn(self):
+        text = self.client.chat([], SamplingParams(), self.context)
+        lowered = text.lower()
+        for claim in self.client._CLAIMS:
+            fragment = claim.format(subject="cereal").split(" and ")[0].lower()
+            self.assertLessEqual(lowered.count(fragment), 1, fragment)
+
     def test_brain_state_changes_the_sentence(self):
         from flykirk.brain.readout import Telemetry
 

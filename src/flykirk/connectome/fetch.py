@@ -26,7 +26,7 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 import numpy as np
 
 from ..paths import data_dir, ensure_dir
-from .graph import Connectome, NeuronTable
+from .graph import MODULATORY, Connectome, NeuronTable
 from .surrogate import PROVENANCE, surrogate_connectome
 
 __all__ = [
@@ -247,6 +247,51 @@ class _RootIdMapper:
         return out.astype(np.int64)
 
 
+def _pick_transmitters(names: Sequence[str]) -> Optional[Dict[str, str]]:
+    """Locate the per-synapse transmitter probability columns, if present.
+
+    FlyWire predicts a transmitter for every presynapse, so these columns are
+    strictly better than the per-neuron ``top_nt``: a neuron that is cholinergic
+    on most of its outputs can still be GABAergic on one of them.
+    """
+    lowered = {n.lower(): n for n in names}
+    found: Dict[str, str] = {}
+    for key, needles in (
+        ("gaba", ("gaba_avg", "gaba")),
+        ("ach", ("ach_avg", "acetylcholine_avg", "ach")),
+        ("glut", ("glut_avg", "glutamate_avg", "glut")),
+        ("da", ("da_avg", "dopamine_avg", "da")),
+        ("ser", ("ser_avg", "serotonin_avg", "ser")),
+        ("oct", ("oct_avg", "octopamine_avg", "oct")),
+    ):
+        for needle in needles:
+            if needle in lowered:
+                found[key] = lowered[needle]
+                break
+    return found or None
+
+
+def _transmitter_sign(batch: Dict[str, Any], cols: Dict[str, str]) -> Optional[np.ndarray]:
+    """Per-edge sign from per-synapse transmitter probabilities.
+
+    Fast ionotropic transmitters decide the sign; the aminergic ones are
+    neuromodulatory and only damp it. Ties resolve excitatory, matching the
+    per-neuron fallback.
+    """
+    arrays = {key: np.asarray(batch[column], dtype=np.float64) for key, column in cols.items()}
+    if not arrays:
+        return None
+    n = len(next(iter(arrays.values())))
+    zero = np.zeros(n, dtype=np.float64)
+    inhibitory = arrays.get("gaba", zero)
+    excitatory = arrays.get("ach", zero) + arrays.get("glut", zero)
+    modulatory = arrays.get("da", zero) + arrays.get("ser", zero) + arrays.get("oct", zero)
+
+    sign = np.where(inhibitory > excitatory, -1.0, 1.0)
+    sign = np.where(modulatory > (inhibitory + excitatory), sign * MODULATORY, sign)
+    return sign.astype(np.float32)
+
+
 def connectome_from_feather(
     feather: Path,
     neurons: NeuronTable,
@@ -278,6 +323,7 @@ def connectome_from_feather(
     pre_parts: List[np.ndarray] = []
     post_parts: List[np.ndarray] = []
     weight_parts: List[np.ndarray] = []
+    sign_parts: List[np.ndarray] = []
     kept = 0
     dropped_unmapped = 0
     rows_seen = 0
@@ -287,6 +333,7 @@ def connectome_from_feather(
     pre_col = _pick(names, PRE_CANDIDATES)
     post_col = _pick(names, POST_CANDIDATES)
     weight_col = _pick(names, WEIGHT_CANDIDATES)
+    transmitter_cols = _pick_transmitters(names)
     if not pre_col or not post_col:
         raise ValueError(f"could not find pre/post columns in {names}")
 
@@ -300,18 +347,25 @@ def connectome_from_feather(
             weight = np.ones(pre_ids.shape[0], dtype=np.float32)
         rows_seen += pre_ids.shape[0]
 
-        pre_ix = mapper.map(pre_ids.astype(np.int64))
-        post_ix = mapper.map(post_ids.astype(np.int64))
-        keep = (pre_ix >= 0) & (post_ix >= 0) & (weight >= min_synapses)
+        edge_sign = _transmitter_sign(batch, transmitter_cols) if transmitter_cols else None
+        pre_ix = mapper.map(pre_ids)
+        post_ix = mapper.map(post_ids)
         mapped_both = (pre_ix >= 0) & (post_ix >= 0)
         dropped_unmapped += int((~mapped_both).sum())
+        keep = mapped_both & (weight >= min_synapses)
         pre_ix, post_ix, weight = pre_ix[keep], post_ix[keep], weight[keep]
+        if edge_sign is not None:
+            edge_sign = edge_sign[keep]
         if class_ok is not None and pre_ix.size:
             keep2 = class_ok[pre_ix] & class_ok[post_ix]
             pre_ix, post_ix, weight = pre_ix[keep2], post_ix[keep2], weight[keep2]
+            if edge_sign is not None:
+                edge_sign = edge_sign[keep2]
         pre_parts.append(pre_ix)
         post_parts.append(post_ix)
         weight_parts.append(weight)
+        if edge_sign is not None:
+            sign_parts.append(edge_sign)
         kept += pre_ix.shape[0]
         if progress:
             print(
@@ -330,10 +384,13 @@ def connectome_from_feather(
     pre = np.concatenate(pre_parts)
     post = np.concatenate(post_parts)
     weight = np.concatenate(weight_parts)
+    edge_sign = np.concatenate(sign_parts) if sign_parts else None
     if limit_edges and pre.shape[0] > limit_edges:
         pre, post, weight = pre[:limit_edges], post[:limit_edges], weight[:limit_edges]
+        if edge_sign is not None:
+            edge_sign = edge_sign[:limit_edges]
 
-    columns, counts = np.unique(pre, return_counts=True)
+    columns, _counts = np.unique(pre, return_counts=True)
     return Connectome.from_edgelist(
         pre,
         post,
@@ -347,7 +404,9 @@ def connectome_from_feather(
             "min_synapses": min_synapses,
             "unmapped_dropped": dropped_unmapped,
             "active_presynaptic_neurons": int(columns.shape[0]),
+            "edge_transmitter": bool(transmitter_cols),
         },
+        edge_sign=edge_sign,
     )
 
 
