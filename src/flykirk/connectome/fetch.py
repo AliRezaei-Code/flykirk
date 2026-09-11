@@ -397,7 +397,7 @@ def fetch_connectome(
     root = ensure_dir(root or data_dir())
     source = source.lower()
     if source in {PROVENANCE, "surrogate", "synthetic"}:
-        graph = surrogate_connectome(neurons=neurons, seed=seed, max_edges=max_edges)
+        graph = surrogate_connectome(n_neurons=neurons, seed=seed, max_edges=max_edges)
     elif source in {"annotations", "flywire", "zenodo"}:
         table = fetch_annotations(root, force=force, progress=progress)
         if source == "annotations":
@@ -428,14 +428,26 @@ def load_or_build_connectome(
     refresh: bool = False,
     **kwargs: Any,
 ) -> Connectome:
-    """Load the cached connectome if it matches ``source``, else build it."""
+    """Load the cached connectome if it matches the request, else build it.
+
+    The cache is keyed on shape as well as provenance: asking for a different
+    neuron count or seed than the cached graph was built with rebuilds it,
+    rather than silently handing back a graph of the wrong size.
+    """
     root = ensure_dir(root or data_dir())
     cache = root / "connectome.npz"
+    want_neurons = kwargs.get("neurons")
+    want_seed = kwargs.get("seed")
     if cache.exists() and not refresh:
         graph = Connectome.load(cache)
-        if source in {PROVENANCE, "surrogate", "synthetic"} and graph.source == PROVENANCE:
-            return graph
-        if source not in {PROVENANCE, "surrogate", "synthetic"} and graph.source.startswith("flywire"):
+        surrogate_request = source in {PROVENANCE, "surrogate", "synthetic"}
+        surrogate_cached = graph.source == PROVENANCE
+        if surrogate_request and surrogate_cached:
+            same_neurons = want_neurons is None or graph.n_neurons == int(want_neurons)
+            same_seed = want_seed is None or graph.meta.get("seed") == int(want_seed)
+            if same_neurons and same_seed:
+                return graph
+        elif not surrogate_request and graph.source.startswith("flywire"):
             return graph
     return fetch_connectome(source=source, root=root, progress=True, **kwargs)
 

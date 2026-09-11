@@ -1,7 +1,221 @@
 # flykirk
 
-A fruit-fly connectome wired to a local Liquid AI SLM so it can do campus-debate
-parody. Work in progress; full README lands with the pipeline.
+A fruit fly connectome wired to a local Liquid AI small language model, so it can
+do campus-debate parody.
 
-Parody project. Not affiliated with, endorsed by, or connected to any person or
-organisation referenced by the persona pack.
+The fly does not read your prompt. Text is hashed onto its sensory neurons, the
+spiking activity spreads through the wiring diagram, the descending-neuron pool
+gets measured, and that measurement writes the system prompt *and* sets the
+sampler. Two turns of the same sentence produce different output because the
+brain between them changed.
+
+**Parody.** Not affiliated with, endorsed by, or connected to any person or
+organisation. The default motions are absurd on purpose — the comedy comes from
+applying debate-bro mechanics to soup and traffic cones, not from arguing about
+real people.
+
+---
+
+## Install
+
+```bash
+git clone https://github.com/AliRezaei-Code/flykirk && cd flykirk
+pip install -e .            # numpy is the only runtime dependency
+make test                   # 93 tests, no network, no model
+```
+
+## Quickstart, no model, no download
+
+```bash
+make demo
+```
+
+The `--offline` path uses a scripted speaker instead of a language model, so the
+whole brain pipeline runs with nothing but numpy. It is the fastest way to see
+what the brain contributes:
+
+```
+FLY-1  (round 2)
+  descending pool    1.59 Hz   recruitment   0.79 Hz   population    1.48 Hz
+  agitation   ##################.... 0.84
+  confidence  ####################.. 0.90
+  dominance   ##########............ 0.46
+  speech      5.53 syllables/s   OA 0.39  DA 0.40  5HT 0.35
+  sampler: temp 1.03  top_p 0.95  freq 0.20  pres 0.64  max 234
+  Hold on, hold on. The cereal is a settled question and the other side knows
+  it. Every argument for the cereal falls apart the second you say it out loud.
+```
+
+Watch `descending pool` and `temp` climb across rounds. Nobody programmed that:
+octopamine accumulates with activity, serotonin accumulates more slowly, and the
+fly gets louder until it gets tired.
+
+## Quickstart with a real local model
+
+Get a Liquid AI LFM2 GGUF being served by anything OpenAI-compatible:
+
+```bash
+ollama serve
+ollama pull hf.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF:Q4_K_M   # ~700 MB
+```
+
+or, with llama.cpp:
+
+```bash
+llama serve -hf LiquidAI/LFM2-700M-GGUF:Q4_K_M                 # http://localhost:8080/v1
+```
+
+Then:
+
+```bash
+flykirk doctor                                                  # verifies the endpoint
+flykirk debate --rounds 3 --show-brain \
+    --topic "Resolved: soup is not a meal."
+```
+
+Point it anywhere else with `--base-url`, `--model`, `--api-key`, or the
+`FLYKIRK_BASE_URL` / `FLYKIRK_MODEL` / `FLYKIRK_API_KEY` environment variables.
+
+## Using the real FlyWire connectome
+
+By default flykirk runs on a **synthetic block-model surrogate** — a graph tagged
+`provenance="synthetic-surrogate"` in every artifact it produces, so it can never
+be confused with the real thing. It reproduces the fly's superclass composition,
+transmitter mix, sparsity and heavy-tailed synapse counts, and it exists purely so
+the pipeline runs offline in seconds.
+
+For the real wiring diagram:
+
+```bash
+flykirk fetch annotations                    # 31.7 MB, 139,248 neurons
+flykirk fetch connectome --source zenodo     # 852 MB, the FlyWire 783 proofread edges
+flykirk debate --source zenodo --rounds 3 --neurons 139255
+```
+
+Data comes from the FlyWire Consortium's public releases:
+
+- annotations: [`flyconnectome/flywire_annotations`](https://github.com/flyconnectome/flywire_annotations)
+- connectivity: [Zenodo record 10676866](https://zenodo.org/records/10676866)
+
+```bibtex
+@article{Dorkenwald2024, title={Neuronal wiring diagram of an adult brain},
+  journal={Nature}, year={2024}, doi={10.1038/s41586-024-07558-y}}
+@article{Schlegel2024, title={Whole-brain annotation and multi-connectome cell typing of Drosophila},
+  journal={Nature}, year={2024}, doi={10.1038/s41586-024-07686-5}}
+```
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[opponent's sentence] --> B[SensoryEncoder<br/>hashed top-k sensory code]
+    B --> C[LIFNetwork<br/>CSR connectome, signed synapses]
+    C --> D[NeuromodulatorSystem<br/>octopamine / dopamine / serotonin]
+    D -->|synaptic gain| C
+    C --> E[Readout<br/>descending pool vs learned idle baseline]
+    E --> F[PersonaStyle<br/>stage directions]
+    E --> G[SamplingParams<br/>temperature, penalties, length]
+    F --> H[local LFM2]
+    G --> H
+    H --> I[a fly with a chip on its shoulder]
+    I -->|next turn| A
+```
+
+### The connectome
+
+`Connectome` is a CSR sparse graph: nodes are neurons keyed by FlyWire `root_id`,
+edges are chemical synapses aggregated per (pre, post) pair and weighted by
+synapse count — Drosophila synapses are polyadic, so one anatomical connection
+routinely carries tens of release sites. Each presynaptic neuron's transmitter is
+folded into the sign of its outgoing weights (GABA, glycine and histamine are
+inhibitory; dopamine, serotonin and octopamine are modulatory and contribute a
+weak sign-preserving drive). Synaptic input is one `np.bincount`, so the package
+needs numpy and nothing else.
+
+### The dynamics
+
+Vectorised leaky integrate-and-fire with three properties that took the most
+tuning to get right, and are the reason the output is not noise:
+
+- **Drive normalised by in-degree.** The same parameters behave the same on a
+  4,000-neuron surrogate and on all 139,255 FlyWire neurons.
+- **Heterogeneous excitability.** A per-neuron bias drawn once per network. A
+  homogeneous population driven above threshold is not a brain, it is a clock —
+  every neuron fires at the same rate and no stimulus can change anything.
+- **Ceilinged spike-frequency adaptation.** Unbounded adaptation pushes
+  steady-state rate to `increment × rate × tau_adapt`, which silences the
+  population; the ceiling keeps it as a modulation rather than the dominant term.
+
+### The readout
+
+`Readout` learns the fly's **idle** firing pattern while nothing is happening, then
+reports how a stimulus moved the descending-neuron pool away from it. Absolute
+levels are dominated by global arousal, which is the same for every input; the
+deviation is what carries content.
+
+| Field | Meaning | Reaches the model as |
+|---|---|---|
+| `agitation` | mean rectified recruitment of the descending pool | pace, sentence length |
+| `dominance` | excitatory vs inhibitory recruitment | attack or pivot |
+| `deflection` | entropy of the recruitment pattern | focus or change the subject |
+| `confidence` | sustain: mean recruitment over peak | how much it hedges |
+| `stamina` | accumulated adaptation | when to wind down |
+| `syllables_per_sec` | dominant frequency of the pool's population rate | speaking rate |
+
+That last one is the honest version of the joke: the fly's own neural oscillation
+sets how fast it talks.
+
+### The language model
+
+`:class:`OpenAICompatClient` is stdlib-only `urllib` against `/chat/completions`,
+so any OpenAI-compatible server works. `ScriptedClient` needs no model at all and
+makes `--offline` deterministic.
+
+## CLI
+
+```
+flykirk doctor                         check environment, data and endpoint
+flykirk fetch annotations              download the FlyWire 783 annotations
+flykirk fetch connectome --source zenodo   build the real connectome
+flykirk graph --neurons 4000           describe the graph in use
+flykirk brain --text "banana" --json   stimulate one brain, print the readout
+flykirk debate --rounds 3 --offline    run a debate
+flykirk personas                       list registers
+```
+
+Useful `debate` flags: `--topic` (repeatable), `--random-topic`, `--show-brain`,
+`--json-out transcript.json`, `--no-judge`, `--judge-model`, `--source`,
+`--neurons`, `--seed`.
+
+## What is real here, and what is not
+
+Stated plainly, because it matters:
+
+- **Real:** the FlyWire annotations and connectivity (when you fetch them), the
+  graph structure, the spiking simulation, the neuromodulator dynamics, the
+  readout, and the coupling from brain state to prompt and sampler.
+- **Approximate:** membrane dynamics are single-compartment LIF, not
+  Hodgkin–Huxley; synapses are instantaneous with no short-term plasticity;
+  there are no gap junctions, no glia, no hormones.
+- **Default surrogate:** without `--source zenodo` the graph is a synthetic block
+  model. It is not the FlyWire connectome and every artifact says so.
+- **Not claimed:** this is not a mind, a brain emulation, or evidence about
+  anything. The fly brain's output is not speech and no readout can make it
+  speech; that gap is bridged by a language model, which is the joke.
+
+## Tests
+
+```bash
+make test
+```
+
+93 tests, all stdlib `unittest`, no network and no model. They cover the sparse
+graph (edge aggregation, transmitter sign, drive direction, subgraph induction,
+persistence), LIF dynamics (threshold, refractoriness, monotone rate, adaptation
+ceiling, calibration), the sensory encoder (determinism, sparsity, loudness), the
+readout (bounds, monotonicity, idle baseline, aggregate rules), the persona and
+sampling mappings, and a full offline debate.
+
+## License
+
+MIT. FlyWire data products remain under the FlyWire Consortium's own terms.
