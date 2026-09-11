@@ -1,0 +1,24 @@
+# data artifacts (FlyWire downloads, built connectomes)
+data/
+*.feather
+*.tsv
+*.npz
+*.npz.tmp
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# runs
+runs/
+transcripts/
+*.log

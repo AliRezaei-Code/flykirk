@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "flykirk"
+version = "0.1.0"
+description = "A Drosophila connectome driven spiking brain wired to a local Liquid AI SLM to run campus-debate parody. Parody project."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Ali Rezaei" }]
+keywords = ["connectome", "flywire", "drosophila", "spiking-neural-network", "liquid-ai", "lfm2", "local-llm", "parody"]
+dependencies = ["numpy>=1.23"]
+
+[project.optional-dependencies]
+data = ["pyarrow>=14", "pandas>=2"]
+neuprint = ["neuprint-python>=0.7"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+flykirk = "flykirk.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/flykirk"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
