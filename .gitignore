@@ -22,3 +22,6 @@ venv/
 runs/
 transcripts/
 *.log
+
+# deep research artefacts
+.deep-research/

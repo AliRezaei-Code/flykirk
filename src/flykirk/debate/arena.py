@@ -96,13 +96,14 @@ class FlyAgent:
         opponent: str = "",
         turn: int = 1,
         total_turns: int = 1,
+        on_tick: Optional[Callable[[Any], None]] = None,
     ) -> Turn:
         started = time.perf_counter()
         # The opponent's argument is the stimulus. Hearing it is what moves the
         # brain before the fly opens its mouth.
         stimulus = opponent_text.strip() or topic
-        telemetry = self.sim.receive(stimulus)
-        self.sim.settle(max(40, self.sim.config.settle_ticks // 3))
+        telemetry = self.sim.receive(stimulus, on_tick=on_tick)
+        self.sim.settle(max(40, self.sim.config.settle_ticks // 3), on_tick=on_tick)
 
         system = build_system_prompt(
             self.style,
@@ -160,6 +161,7 @@ class Arena:
         judge: Optional[ChatClient] = None,
         judge_model_name: str = "judge",
         on_turn: Optional[Callable[[Turn], None]] = None,
+        on_tick: Optional[Callable[[str, Any], None]] = None,
     ) -> None:
         if len(flies) < 2:
             raise ValueError("a debate needs at least two flies")
@@ -167,6 +169,7 @@ class Arena:
         self.judge = judge
         self.judge_model_name = judge_model_name
         self.on_turn = on_turn
+        self.on_tick = on_tick
         self.turns: List[Turn] = []
 
     def run(self, topic: str, rounds: int = 3, judge: bool = True) -> DebateTranscript:
@@ -174,12 +177,16 @@ class Arena:
             for index, fly in enumerate(self.flies):
                 opponent = self.flies[(index + 1) % len(self.flies)]
                 last_opponent_text = self._last_text_from(opponent.name)
+                tick_hook = None
+                if self.on_tick is not None:
+                    tick_hook = lambda sample, _name=fly.name, _r=rnd: self.on_tick(_name, sample)  # noqa: E731
                 turn = fly.respond(
                     topic=topic,
                     opponent_text=last_opponent_text,
                     opponent=opponent.name,
                     turn=rnd,
                     total_turns=rounds,
+                    on_tick=tick_hook,
                 )
                 self.turns.append(turn)
                 if self.on_turn is not None:

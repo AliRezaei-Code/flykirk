@@ -14,7 +14,7 @@ reporting a global arousal level that is identical for every input.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 
@@ -24,7 +24,70 @@ from .lif import LIFNetwork, LIFParams
 from .neuromod import NeuromodParams, NeuromodulatorSystem
 from .readout import Readout, Telemetry
 
-__all__ = ["BrainConfig", "BrainSim"]
+__all__ = ["BrainConfig", "BrainSim", "TickSample"]
+
+
+def _select_monitored(connectome: Connectome, count: int) -> np.ndarray:
+    """Pick the neurons the live raster displays.
+
+    Stratified across sensory, central and descending pools so the raster shows
+    a signal entering the brain and leaving it, rather than 96 random cells.
+    Deterministic, so the same raster channels mean the same thing every run.
+    """
+    if connectome.n == 0:
+        return np.zeros(0, dtype=np.int64)
+    count = max(1, min(int(count), connectome.n))
+    groups = [
+        connectome.mask(super_class="sensory"),
+        connectome.mask(super_class="central"),
+        connectome.mask(super_class="descending"),
+    ]
+    rng = np.random.default_rng(0)
+    per_group = max(1, count // len(groups))
+    picked: List[np.ndarray] = []
+    for mask in groups:
+        idx = np.flatnonzero(mask)
+        if idx.size:
+            take = min(per_group, idx.size)
+            picked.append(rng.choice(idx, size=take, replace=False))
+    if not picked:
+        return np.arange(count, dtype=np.int64)
+    out = np.unique(np.concatenate(picked))
+    if out.shape[0] > count:
+        out = out[:count]
+    return out.astype(np.int64)
+
+
+@dataclass
+class TickSample:
+    """One instrumented read of the running network, for live display.
+
+    This is deliberately raw: which monitored neurons fired, plus the slow
+    quantities. Anything the UI derives (rates, percentages) it derives from
+    the same numbers the persona layer sees.
+    """
+
+    tick: int
+    sim_ms: float
+    population_hz: float
+    descending_hz: float
+    spikes: int
+    active_fraction: float
+    neuromod: Dict[str, float]
+    #: Indices into ``monitored`` that spiked on this step.
+    fired: np.ndarray
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "tick": self.tick,
+            "sim_ms": round(self.sim_ms, 3),
+            "population_hz": round(self.population_hz, 3),
+            "descending_hz": round(self.descending_hz, 3),
+            "spikes": self.spikes,
+            "active_fraction": round(self.active_fraction, 5),
+            "neuromod": {k: round(v, 4) for k, v in self.neuromod.items()},
+            "fired": self.fired.tolist(),
+        }
 
 
 @dataclass
@@ -48,6 +111,13 @@ class BrainConfig:
     active_sensory_neurons: int = 96
     #: exponential decay of the stimulus pulse, in ms
     stimulus_tau_ms: float = 110.0
+    #: Neurons whose spikes are streamed to the live UI. The raster is a fixed
+    #: stratified sample rather than every neuron: 139k channels is neither
+    #: renderable nor honest about what a reader can follow.
+    monitor_count: int = 96
+    #: Emit one sample every this many simulation steps. At dt=0.5 ms this is
+    #: one sample per 4 ms of brain time.
+    sample_every: int = 8
 
     def replace(self, **changes: Any) -> "BrainConfig":
         return replace(self, **changes)
@@ -80,6 +150,7 @@ class BrainSim:
             seed=self.seed,
         )
         self.readout = Readout(connectome, dt_ms=self.config.dt_ms)
+        self.monitored = _select_monitored(connectome, self.config.monitor_count)
         self.history: List[Telemetry] = []
         if self.config.calibrate and connectome.n:
             self.net.calibrate(target_hz=self.config.target_rate_hz)
@@ -112,9 +183,9 @@ class BrainSim:
 
     # ---------------------------------------------------------------- dynamics
 
-    def step(self, external: Optional[np.ndarray] = None) -> None:
+    def step(self, external: Optional[np.ndarray] = None) -> np.ndarray:
         gain = self.neuromod.state.synaptic_gain(self.neuromod.p.baseline)
-        self.net.step(external, gain=gain)
+        return self.net.step(external, gain=gain)
 
     def _advance(
         self,
@@ -124,12 +195,36 @@ class BrainSim:
         salience: float = 0.0,
         collect: bool = False,
         update_idle: bool = False,
+        on_tick: Optional[Callable[[TickSample], None]] = None,
     ) -> List[Telemetry]:
         pulse = external is not None and external.ndim == 2
         frames: List[Telemetry] = []
+        every = max(1, self.config.sample_every)
+        monitored_fired = np.zeros(self.monitored.shape[0], dtype=bool)
+        accumulated = 0
         for t in range(ticks):
             ext = external[t] if pulse else external
-            self.step(ext)
+            spikes = self.step(ext)
+            accumulated += int(spikes.sum())
+            if on_tick is not None:
+                monitored_fired |= spikes[self.monitored] > 0
+                if t % every == every - 1:
+                    on_tick(
+                        TickSample(
+                            tick=self.net.tick,
+                            sim_ms=self.net.tick * self.config.dt_ms,
+                            population_hz=self.net.last_population_hz(),
+                            descending_hz=float(self.net.rate[self.readout.speech_mask].mean())
+                            if self.readout.n_speech
+                            else 0.0,
+                            spikes=accumulated,
+                            active_fraction=float((self.net.rate > 1.0).mean()) if self.net.n else 0.0,
+                            neuromod=self.neuromod.state.as_dict(),
+                            fired=np.flatnonzero(monitored_fired),
+                        )
+                    )
+                    monitored_fired = np.zeros(self.monitored.shape[0], dtype=bool)
+                    accumulated = 0
             decay = float(np.exp(-t * self.config.dt_ms / max(self.config.stimulus_tau_ms, 1e-3))) if pulse else 1.0
             self.neuromod.step(
                 self.net.last_population_hz(),
@@ -151,7 +246,7 @@ class BrainSim:
             update_idle=update_idle,
         )
 
-    def receive(self, text: str, ticks: Optional[int] = None) -> Telemetry:
+    def receive(self, text: str, ticks: Optional[int] = None, on_tick: Optional[Callable[[TickSample], None]] = None) -> Telemetry:
         """Deliver text as a stimulus and summarise the reaction.
 
         The returned :class:`Telemetry` is a window summary (peak agitation,
@@ -169,12 +264,13 @@ class BrainSim:
             salience=salience,
             collect=True,
             update_idle=False,
+            on_tick=on_tick,
         )
         telemetry = Telemetry.aggregate(frames)
         self.history.append(telemetry)
         return telemetry
 
-    def settle(self, ticks: Optional[int] = None) -> Telemetry:
+    def settle(self, ticks: Optional[int] = None, on_tick: Optional[Callable[[TickSample], None]] = None) -> Telemetry:
         """Let the network run with no stimulus.
 
         Mood decays, adaptation clears, and the readout's idle baseline keeps
@@ -182,7 +278,7 @@ class BrainSim:
         lands.
         """
         ticks = self.config.settle_ticks if ticks is None else int(ticks)
-        frames = self._advance(ticks, collect=True, update_idle=True)
+        frames = self._advance(ticks, collect=True, update_idle=True, on_tick=on_tick)
         telemetry = frames[-1] if frames else self.observe(update_idle=True)
         self.history.append(telemetry)
         return telemetry

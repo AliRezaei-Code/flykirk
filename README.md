@@ -248,6 +248,45 @@ ceiling, calibration), the sensory encoder (determinism, sparsity, loudness), th
 readout (bounds, monotonicity, idle baseline, aggregate rules), the persona and
 sampling mappings, and a full offline debate.
 
+## 3D scene
+
+`flykirk` can render itself. The head of the fly is built from the **real
+FlyWire 783 annotations** — every point in it is an actual neuron at its actual
+annotated template position, coloured by superclass, with the 1,303 descending
+neurons highlighted and 1,200 real proofread connections drawn between them.
+The debate stage shows the live brain readout and sampler.
+
+```bash
+flykirk fetch annotations                # 31.7 MB, needed for the head
+flykirk debate --rounds 3 --offline --json-out .deep-research/scene/transcript.json
+python .deep-research/scene/analyse_flywire.py    # samples real edges from the feather
+blender --background --python .deep-research/scene/build_scene.py
+```
+
+Outputs land in `.deep-research/scene/`: `flykirk_fly.png`, `flykirk_stage.png`,
+`flykirk_wide.png`, and `flykirk_scene.blend`.
+
+Two honest caveats, printed on a card in the scene itself:
+
+- The debate readout comes from the **synthetic-surrogate** graph, not the real
+  one. The real FlyWire data is only used for the 3D head.
+- The FAFB template's z axis is compressed relative to anatomy (x span 203.8 µm,
+  y 97.9 µm, z 6.95 µm), so z is exaggerated **10×** for legibility. x and y
+  keep their true relative scale.
+
+The scene is a parody set-piece like the rest of the project: the debater is a
+generic stylised figure with no likeness to any real person, and the card in
+scene repeats the non-affiliation disclaimer at the top of this file.
+
+## What the literature says about this
+
+`.deep-research/` holds an adversarial audit of this repo against the FlyWire
+primary sources — 327 unique references, and the headline connectivity numbers
+recomputed from the released 852 MB feather. Short version: the numbers are
+reproducible but rest on an **undisclosed ≥3-synapses-per-neuropil threshold**
+(the full v783 graph has 16,847,997 connections and 54,492,922 synapses), and
+several README claims need revision. See `.deep-research/research-report.md`.
+
 ## License
 
 MIT. FlyWire data products remain under the FlyWire Consortium's own terms.
